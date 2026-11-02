@@ -43,6 +43,35 @@ class ScoredContact {
   });
 }
 
+class CallLogItem {
+  final String id;
+  final String number;
+  final String? name;
+  final int type; // 1: Incoming, 2: Outgoing, 3: Missed, 5: Rejected
+  final int date; // timestamp in millis
+  final int duration; // in seconds
+
+  CallLogItem({
+    required this.id,
+    required this.number,
+    this.name,
+    required this.type,
+    required this.date,
+    required this.duration,
+  });
+
+  factory CallLogItem.fromMap(Map<dynamic, dynamic> map) {
+    return CallLogItem(
+      id: map['id']?.toString() ?? '',
+      number: map['number']?.toString() ?? '',
+      name: map['name']?.toString(),
+      type: (map['type'] as num?)?.toInt() ?? 1,
+      date: (map['date'] as num?)?.toInt() ?? 0,
+      duration: (map['duration'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
 class MainHomeScreen extends StatefulWidget {
   const MainHomeScreen({super.key});
 
@@ -53,23 +82,28 @@ class MainHomeScreen extends StatefulWidget {
 class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObserver {
   static const MethodChannel _dialerChannel = MethodChannel('com.antigravity.contactfinder/dialer');
 
-  int _currentTabIndex = 0;
+  int _currentTabIndex = 0; // 0: Gần đây, 1: Bàn phím, 2: Danh bạ
   List<PreparedContact> _allContacts = [];
-  bool _isLoading = true;
+  bool _isLoadingContacts = true;
   bool _permissionDenied = false;
-  bool _isDefaultDialer = true; // Default to true until checked
+  bool _isDefaultDialer = true;
 
-  // Dialpad state with text controller for cursor positioning and editing anywhere
+  // Call Logs state
+  List<CallLogItem> _callLogs = [];
+  bool _isLoadingCallLogs = false;
+  int _callLogFilter = 0; // 0: Tất cả, 1: Cuộc gọi nhỡ
+
+  // Dialpad state
   final TextEditingController _dialController = TextEditingController();
   List<ScoredContact> _dialMatchedContacts = [];
 
-  // Search state
+  // Contacts Search state
   final TextEditingController _searchController = TextEditingController();
   List<ScoredContact> _filteredContacts = [];
   String _currentQuery = '';
   Timer? _debounceTimer;
 
-  // Cached static styles for 120 FPS performance
+  // Cached static styles
   static const _nameBaseStyle = TextStyle(
     fontSize: 16,
     fontWeight: FontWeight.bold,
@@ -101,6 +135,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadContacts();
+    _loadCallLogs();
     _checkDefaultDialer();
     _searchController.addListener(_onSearchChanged);
     _dialController.addListener(_onDialChanged);
@@ -119,6 +154,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _checkDefaultDialer();
+      _loadCallLogs();
     }
   }
 
@@ -140,9 +176,34 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
     } catch (_) {}
   }
 
+  Future<void> _loadCallLogs() async {
+    setState(() {
+      _isLoadingCallLogs = true;
+    });
+
+    try {
+      final List<dynamic>? rawLogs = await _dialerChannel.invokeMethod('getCallLogs');
+      if (rawLogs != null) {
+        final logs = rawLogs
+            .map((e) => CallLogItem.fromMap(e as Map<dynamic, dynamic>))
+            .toList();
+        if (mounted) {
+          setState(() {
+            _callLogs = logs;
+            _isLoadingCallLogs = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _isLoadingCallLogs = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _isLoadingCallLogs = false);
+    }
+  }
+
   Future<void> _loadContacts() async {
     setState(() {
-      _isLoading = true;
+      _isLoadingContacts = true;
       _permissionDenied = false;
     });
 
@@ -155,7 +216,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
 
       if (!hasPermission) {
         setState(() {
-          _isLoading = false;
+          _isLoadingContacts = false;
           _permissionDenied = true;
         });
         return;
@@ -189,13 +250,13 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
 
       setState(() {
         _allContacts = items;
-        _isLoading = false;
+        _isLoadingContacts = false;
       });
       _filterContacts(_searchController.text);
       _updateDialpadMatches();
     } catch (e) {
       setState(() {
-        _isLoading = false;
+        _isLoadingContacts = false;
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -387,6 +448,12 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
     }
   }
 
+  Future<void> _addNewContact(String phoneNumber) async {
+    try {
+      await _dialerChannel.invokeMethod('openNewContact', {'number': phoneNumber});
+    } catch (_) {}
+  }
+
   void _copyToClipboard(String text) {
     Clipboard.setData(ClipboardData(text: text));
     ScaffoldMessenger.of(context).showSnackBar(
@@ -405,7 +472,195 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
     );
   }
 
-  void _showActionDialog(PreparedContact contact, Map<String, List<MatchHighlight>> phoneHighlights) {
+  String _formatCallDate(int timestampMillis) {
+    if (timestampMillis == 0) return '';
+    final date = DateTime.fromMillisecondsSinceEpoch(timestampMillis);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final itemDate = DateTime(date.year, date.month, date.day);
+
+    final hour = date.hour.toString().padLeft(2, '0');
+    final minute = date.minute.toString().padLeft(2, '0');
+
+    if (itemDate == today) {
+      return '$hour:$minute';
+    } else if (today.difference(itemDate).inDays == 1) {
+      return 'Hôm qua $hour:$minute';
+    } else {
+      final day = date.day.toString().padLeft(2, '0');
+      final month = date.month.toString().padLeft(2, '0');
+      return '$day/$month $hour:$minute';
+    }
+  }
+
+  String _formatDuration(int seconds) {
+    if (seconds <= 0) return '';
+    if (seconds < 60) return '$seconds giây';
+    final minutes = seconds ~/ 60;
+    final remainingSeconds = seconds % 60;
+    if (remainingSeconds == 0) return '$minutes phút';
+    return '$minutes p $remainingSeconds s';
+  }
+
+  void _showCallDetailsDialog(CallLogItem log) {
+    final title = (log.name != null && log.name!.isNotEmpty) ? log.name! : log.number;
+    final subtitle = (log.name != null && log.name!.isNotEmpty) ? log.number : '';
+
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                Text(
+                  title,
+                  style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                ),
+                if (subtitle.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(subtitle, style: TextStyle(fontSize: 14, color: Colors.grey[600])),
+                ],
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    _buildCallTypeIcon(log.type, size: 16),
+                    const SizedBox(width: 6),
+                    Text(_getCallTypeName(log.type), style: TextStyle(fontSize: 13, color: Colors.grey[700])),
+                    const Spacer(),
+                    Text(_formatCallDate(log.date), style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                const Divider(height: 1),
+                const SizedBox(height: 12),
+
+                // Action buttons
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _buildActionButton(
+                      icon: Icons.call_rounded,
+                      label: 'Gọi điện',
+                      color: const Color(0xFF16A34A),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _callPhone(log.number);
+                      },
+                    ),
+                    _buildActionButton(
+                      icon: Icons.message_rounded,
+                      label: 'Nhắn tin',
+                      color: const Color(0xFF0284C7),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _sendSms(log.number);
+                      },
+                    ),
+                    _buildActionButton(
+                      icon: Icons.copy_rounded,
+                      label: 'Sao chép',
+                      color: Colors.grey.shade700,
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _copyToClipboard(log.number);
+                      },
+                    ),
+                    _buildActionButton(
+                      icon: Icons.person_add_rounded,
+                      label: 'Lưu số',
+                      color: const Color(0xFF1565C0),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _addNewContact(log.number);
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildActionButton({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.12),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: color, size: 22),
+            ),
+            const SizedBox(height: 6),
+            Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.grey[800])),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Icon _buildCallTypeIcon(int type, {double size = 18}) {
+    switch (type) {
+      case 1: // Incoming
+        return Icon(Icons.call_received_rounded, size: size, color: const Color(0xFF2563EB));
+      case 2: // Outgoing
+        return Icon(Icons.call_made_rounded, size: size, color: const Color(0xFF16A34A));
+      case 3: // Missed
+        return Icon(Icons.call_missed_rounded, size: size, color: const Color(0xFFDC2626));
+      default:
+        return Icon(Icons.phone_missed_rounded, size: size, color: Colors.grey);
+    }
+  }
+
+  String _getCallTypeName(int type) {
+    switch (type) {
+      case 1:
+        return 'Cuộc gọi đến';
+      case 2:
+        return 'Cuộc gọi đi';
+      case 3:
+        return 'Cuộc gọi nhỡ';
+      case 5:
+        return 'Từ chối cuộc gọi';
+      default:
+        return 'Cuộc gọi';
+    }
+  }
+
+  void _showContactActionDialog(PreparedContact contact, Map<String, List<MatchHighlight>> phoneHighlights) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -575,7 +830,11 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             Text(
-              _currentTabIndex == 0 ? 'Bàn phím quay số thông minh' : 'Tìm số & tên tiếng Việt thông minh',
+              _currentTabIndex == 0
+                  ? 'Gần đây • Nhật ký cuộc gọi'
+                  : (_currentTabIndex == 1
+                      ? 'Bàn phím quay số thông minh'
+                      : 'Tìm số & tên tiếng Việt thông minh'),
               style: const TextStyle(fontSize: 12, fontWeight: FontWeight.normal, color: Colors.white70),
             ),
           ],
@@ -586,8 +845,11 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: 'Làm mới danh bạ',
-            onPressed: _loadContacts,
+            tooltip: 'Làm mới',
+            onPressed: () {
+              _loadContacts();
+              _loadCallLogs();
+            },
           ),
         ],
       ),
@@ -632,6 +894,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
             child: IndexedStack(
               index: _currentTabIndex,
               children: [
+                _buildCallLogsTab(),
                 _buildDialpadTab(),
                 _buildContactsTab(),
               ],
@@ -660,6 +923,11 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
           },
           items: const [
             BottomNavigationBarItem(
+              icon: Icon(Icons.access_time_rounded),
+              activeIcon: Icon(Icons.access_time_filled_rounded, color: Color(0xFF1565C0)),
+              label: 'Gần đây',
+            ),
+            BottomNavigationBarItem(
               icon: Icon(Icons.dialpad_rounded),
               activeIcon: Icon(Icons.dialpad_rounded, color: Color(0xFF1565C0)),
               label: 'Bàn phím',
@@ -672,6 +940,190 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
           ],
         ),
       ),
+    );
+  }
+
+  // ==================== TAB 0: GẦN ĐÂY (CALL LOGS) ====================
+  Widget _buildCallLogsTab() {
+    final filteredLogs = _callLogFilter == 0
+        ? _callLogs
+        : _callLogs.where((l) => l.type == 3).toList();
+
+    return Column(
+      children: [
+        // Filter Header: Tất cả / Cuộc gọi nhỡ
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border(bottom: BorderSide(color: Colors.grey.shade100)),
+          ),
+          child: Row(
+            children: [
+              ChoiceChip(
+                label: const Text('Tất cả'),
+                selected: _callLogFilter == 0,
+                selectedColor: const Color(0xFFDBEAFE),
+                labelStyle: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.bold,
+                  color: _callLogFilter == 0 ? const Color(0xFF1D4ED8) : Colors.grey[700],
+                ),
+                onSelected: (val) {
+                  if (val) setState(() => _callLogFilter = 0);
+                },
+              ),
+              const SizedBox(width: 8),
+              ChoiceChip(
+                label: const Text('Cuộc gọi nhỡ'),
+                selected: _callLogFilter == 1,
+                selectedColor: const Color(0xFFFEE2E2),
+                labelStyle: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.bold,
+                  color: _callLogFilter == 1 ? const Color(0xFFDC2626) : Colors.grey[700],
+                ),
+                onSelected: (val) {
+                  if (val) setState(() => _callLogFilter = 1);
+                },
+              ),
+              const Spacer(),
+              Text(
+                '${filteredLogs.length} cuộc gọi',
+                style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+              ),
+            ],
+          ),
+        ),
+
+        Expanded(
+          child: _isLoadingCallLogs
+              ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 12),
+                      Text('Đang nạp nhật ký cuộc gọi...'),
+                    ],
+                  ),
+                )
+              : (filteredLogs.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.call_end_outlined, size: 52, color: Colors.grey[300]),
+                          const SizedBox(height: 8),
+                          Text(
+                            _callLogFilter == 1
+                                ? 'Không có cuộc gọi nhỡ nào'
+                                : 'Chưa có lịch sử cuộc gọi',
+                            style: TextStyle(color: Colors.grey[500], fontSize: 14),
+                          ),
+                        ],
+                      ),
+                    )
+                  : RefreshIndicator(
+                      onRefresh: _loadCallLogs,
+                      child: ListView.builder(
+                        physics: const AlwaysScrollableScrollPhysics(parent: ClampingScrollPhysics()),
+                        itemCount: filteredLogs.length,
+                        itemBuilder: (context, index) {
+                          final log = filteredLogs[index];
+                          final isMissed = (log.type == 3);
+                          final displayName = (log.name != null && log.name!.isNotEmpty)
+                              ? log.name!
+                              : log.number;
+                          final hasName = (log.name != null && log.name!.isNotEmpty);
+
+                          return Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              border: Border(bottom: BorderSide(color: Colors.grey.shade100, width: 0.8)),
+                            ),
+                            child: Material(
+                              color: Colors.transparent,
+                              child: InkWell(
+                                onTap: () => _showCallDetailsDialog(log),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                  child: Row(
+                                    children: [
+                                      // Call Type Icon
+                                      _buildCallTypeIcon(log.type, size: 20),
+                                      const SizedBox(width: 14),
+                                      // Name / Number
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              displayName,
+                                              style: TextStyle(
+                                                fontSize: 15.5,
+                                                fontWeight: FontWeight.bold,
+                                                color: isMissed
+                                                    ? const Color(0xFFDC2626)
+                                                    : const Color(0xFF0F172A),
+                                              ),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Row(
+                                              children: [
+                                                if (hasName) ...[
+                                                  Text(
+                                                    log.number,
+                                                    style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                ],
+                                                if (log.duration > 0) ...[
+                                                  Text(
+                                                    _formatDuration(log.duration),
+                                                    style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+                                                  ),
+                                                ],
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      // Date & Call Button
+                                      Text(
+                                        _formatCallDate(log.date),
+                                        style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      GestureDetector(
+                                        behavior: HitTestBehavior.opaque,
+                                        onTap: () => _callPhone(log.number),
+                                        child: Container(
+                                          padding: const EdgeInsets.all(8),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFF0FDF4),
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          child: const Icon(
+                                            Icons.call_rounded,
+                                            color: Color(0xFF16A34A),
+                                            size: 20,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    )),
+        ),
+      ],
     );
   }
 
@@ -766,42 +1218,59 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
             color: Colors.white,
             border: Border(top: BorderSide(color: Colors.grey.shade100)),
           ),
-          child: Row(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              const SizedBox(width: 36),
-              // Interactive moveable cursor TextField
-              Expanded(
-                child: TextField(
-                  controller: _dialController,
-                  readOnly: true, // Don't show system soft keyboard
-                  showCursor: true, // Show the moveable blinking cursor
-                  autofocus: false,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 2.0,
-                    color: Color(0xFF0F172A),
+              Row(
+                children: [
+                  const SizedBox(width: 36),
+                  // Interactive moveable cursor TextField
+                  Expanded(
+                    child: TextField(
+                      controller: _dialController,
+                      readOnly: true, // Don't show system soft keyboard
+                      showCursor: true, // Show the moveable blinking cursor
+                      autofocus: false,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 2.0,
+                        color: Color(0xFF0F172A),
+                      ),
+                      cursorColor: const Color(0xFF1565C0),
+                      cursorWidth: 3.0,
+                      cursorRadius: const Radius.circular(2),
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        isDense: true,
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
                   ),
-                  cursorColor: const Color(0xFF1565C0),
-                  cursorWidth: 3.0,
-                  cursorRadius: const Radius.circular(2),
-                  decoration: const InputDecoration(
-                    border: InputBorder.none,
-                    isDense: true,
-                    contentPadding: EdgeInsets.zero,
-                  ),
-                ),
+                  if (_dialController.text.isNotEmpty)
+                    IconButton(
+                      icon: const Icon(Icons.backspace_outlined, size: 22, color: Colors.grey),
+                      onPressed: _onDialpadBackspace,
+                      onLongPress: _onDialpadClear,
+                      tooltip: 'Xóa (Giữ để xóa hết)',
+                    )
+                  else
+                    const SizedBox(width: 48),
+                ],
               ),
+              // Option to save new contact
               if (_dialController.text.isNotEmpty)
-                IconButton(
-                  icon: const Icon(Icons.backspace_outlined, size: 22, color: Colors.grey),
-                  onPressed: _onDialpadBackspace,
-                  onLongPress: _onDialpadClear,
-                  tooltip: 'Xóa (Giữ để xóa hết)',
-                )
-              else
-                const SizedBox(width: 48),
+                TextButton.icon(
+                  icon: const Icon(Icons.person_add_alt_1_rounded, size: 16, color: Color(0xFF1565C0)),
+                  label: const Text('Thêm vào danh bạ', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  onPressed: () => _addNewContact(_dialController.text),
+                ),
             ],
           ),
         ),
@@ -963,7 +1432,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    _isLoading
+                    _isLoadingContacts
                         ? 'Đang tải danh bạ...'
                         : 'Hiển thị ${_filteredContacts.length} / ${_allContacts.length} danh bạ',
                     style: TextStyle(
@@ -1010,7 +1479,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
   }
 
   Widget _buildContactsList() {
-    if (_isLoading) {
+    if (_isLoadingContacts) {
       return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -1119,7 +1588,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
           child: Material(
             color: Colors.transparent,
             child: InkWell(
-              onTap: () => _showActionDialog(contact, match.phoneHighlights),
+              onTap: () => _showContactActionDialog(contact, match.phoneHighlights),
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 child: Row(

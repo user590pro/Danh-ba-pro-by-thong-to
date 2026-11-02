@@ -167,6 +167,15 @@ class MainActivity : FlutterActivity() {
             val cleanNumber = phoneNumber.replace(Regex("[^0-9+*#]"), "")
             if (cleanNumber.isEmpty()) return
 
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && isDefaultDialer()) {
+                val telecomManager = getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+                if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
+                    val uri = Uri.fromParts("tel", cleanNumber, null)
+                    telecomManager?.placeCall(uri, null)
+                    return
+                }
+            }
+
             if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
                 val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$cleanNumber")).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK

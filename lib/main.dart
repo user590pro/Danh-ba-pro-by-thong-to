@@ -50,14 +50,17 @@ class MainHomeScreen extends StatefulWidget {
   State<MainHomeScreen> createState() => _MainHomeScreenState();
 }
 
-class _MainHomeScreenState extends State<MainHomeScreen> {
+class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObserver {
+  static const MethodChannel _dialerChannel = MethodChannel('com.antigravity.contactfinder/dialer');
+
   int _currentTabIndex = 0;
   List<PreparedContact> _allContacts = [];
   bool _isLoading = true;
   bool _permissionDenied = false;
+  bool _isDefaultDialer = true; // Default to true until checked
 
-  // Dialpad state
-  String _dialNumber = '';
+  // Dialpad state with text controller for cursor positioning and editing anywhere
+  final TextEditingController _dialController = TextEditingController();
   List<ScoredContact> _dialMatchedContacts = [];
 
   // Search state
@@ -96,15 +99,45 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadContacts();
+    _checkDefaultDialer();
     _searchController.addListener(_onSearchChanged);
+    _dialController.addListener(_onDialChanged);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _debounceTimer?.cancel();
     _searchController.dispose();
+    _dialController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkDefaultDialer();
+    }
+  }
+
+  Future<void> _checkDefaultDialer() async {
+    try {
+      final isDefault = await _dialerChannel.invokeMethod<bool>('isDefaultDialer');
+      if (mounted && isDefault != null) {
+        setState(() {
+          _isDefaultDialer = isDefault;
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _requestDefaultDialer() async {
+    try {
+      await _dialerChannel.invokeMethod('requestDefaultDialer');
+      Future.delayed(const Duration(seconds: 1), _checkDefaultDialer);
+    } catch (_) {}
   }
 
   Future<void> _loadContacts() async {
@@ -128,7 +161,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         return;
       }
 
-      // Fetch only name and phone properties - maximum speed and 0 photo overhead
       final contacts = await FlutterContacts.getAll(
         properties: {
           ContactProperty.name,
@@ -184,6 +216,10 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     }
   }
 
+  void _onDialChanged() {
+    _updateDialpadMatches();
+  }
+
   void _filterContacts(String rawQuery) {
     final query = rawQuery.trim();
     if (query.isEmpty) {
@@ -224,14 +260,15 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   }
 
   void _updateDialpadMatches() {
-    if (_dialNumber.isEmpty) {
+    final rawNumber = _dialController.text;
+    if (rawNumber.isEmpty) {
       setState(() {
         _dialMatchedContacts = [];
       });
       return;
     }
 
-    final queryDigits = VietnameseMatcher.extractDigits(_dialNumber);
+    final queryDigits = VietnameseMatcher.extractDigits(rawNumber);
     if (queryDigits.isEmpty) {
       setState(() {
         _dialMatchedContacts = [];
@@ -260,36 +297,65 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     matched.sort((a, b) => b.matchResult.score.compareTo(a.matchResult.score));
 
     setState(() {
-      _dialMatchedContacts = matched.take(5).toList();
+      _dialMatchedContacts = matched.take(6).toList();
     });
   }
 
-  // Dialpad Keypress
+  // Dialpad: Insert at current cursor position
   void _onDialpadKeyPress(String char) {
     HapticFeedback.lightImpact();
-    setState(() {
-      _dialNumber += char;
-    });
-    _updateDialpadMatches();
+    final text = _dialController.text;
+    final selection = _dialController.selection;
+
+    int start = selection.start;
+    int end = selection.end;
+    if (start < 0 || end < 0) {
+      start = text.length;
+      end = text.length;
+    }
+
+    final newText = text.replaceRange(start, end, char);
+    final newPos = start + char.length;
+
+    _dialController.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newPos),
+    );
   }
 
+  // Dialpad: Delete digit at cursor position
   void _onDialpadBackspace() {
-    if (_dialNumber.isNotEmpty) {
-      HapticFeedback.lightImpact();
-      setState(() {
-        _dialNumber = _dialNumber.substring(0, _dialNumber.length - 1);
-      });
-      _updateDialpadMatches();
+    final text = _dialController.text;
+    final selection = _dialController.selection;
+    if (text.isEmpty) return;
+
+    int start = selection.start;
+    int end = selection.end;
+    if (start < 0 || end < 0) {
+      start = text.length;
+      end = text.length;
+    }
+
+    HapticFeedback.lightImpact();
+    if (start != end) {
+      final newText = text.replaceRange(start, end, '');
+      _dialController.value = TextEditingValue(
+        text: newText,
+        selection: TextSelection.collapsed(offset: start),
+      );
+    } else if (start > 0) {
+      final newText = text.replaceRange(start - 1, start, '');
+      _dialController.value = TextEditingValue(
+        text: newText,
+        selection: TextSelection.collapsed(offset: start - 1),
+      );
     }
   }
 
   void _onDialpadClear() {
-    if (_dialNumber.isNotEmpty) {
+    if (_dialController.text.isNotEmpty) {
       HapticFeedback.mediumImpact();
-      setState(() {
-        _dialNumber = '';
-        _dialMatchedContacts = [];
-      });
+      _dialController.clear();
     }
   }
 
@@ -525,11 +591,52 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
           ),
         ],
       ),
-      body: IndexedStack(
-        index: _currentTabIndex,
+      body: Column(
         children: [
-          _buildDialpadTab(),
-          _buildContactsTab(),
+          // Banner asking to set as Default Dialer if not yet default
+          if (!_isDefaultDialer)
+            Container(
+              color: const Color(0xFFFEF3C7),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.phone_in_talk, color: Color(0xFFB45309), size: 19),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Đặt làm ứng dụng gọi điện mặc định',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF92400E),
+                      ),
+                    ),
+                  ),
+                  ElevatedButton(
+                    onPressed: _requestDefaultDialer,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1565C0),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                    ),
+                    child: const Text('Cài đặt ngay', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ),
+            ),
+
+          Expanded(
+            child: IndexedStack(
+              index: _currentTabIndex,
+              children: [
+                _buildDialpadTab(),
+                _buildContactsTab(),
+              ],
+            ),
+          ),
         ],
       ),
       bottomNavigationBar: Container(
@@ -579,10 +686,10 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.dialer_sip_outlined, size: 54, color: Colors.grey[300]),
+                      Icon(Icons.dialer_sip_outlined, size: 50, color: Colors.grey[300]),
                       const SizedBox(height: 8),
                       Text(
-                        _dialNumber.isEmpty
+                        _dialController.text.isEmpty
                             ? 'Bấm số để gọi điện'
                             : 'Không tìm thấy liên hệ trùng khớp',
                         style: TextStyle(
@@ -595,6 +702,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                   ),
                 )
               : ListView.builder(
+                  physics: const ClampingScrollPhysics(),
                   padding: const EdgeInsets.symmetric(vertical: 4),
                   itemCount: _dialMatchedContacts.length,
                   itemBuilder: (context, index) {
@@ -638,9 +746,11 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                           onPressed: () => _callPhone(displayPhone),
                         ),
                         onTap: () {
-                          setState(() {
-                            _dialNumber = displayPhone.replaceAll(RegExp(r'\s+'), '');
-                          });
+                          final clean = displayPhone.replaceAll(RegExp(r'\s+'), '');
+                          _dialController.value = TextEditingValue(
+                            text: clean,
+                            selection: TextSelection.collapsed(offset: clean.length),
+                          );
                         },
                       ),
                     );
@@ -648,33 +758,47 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                 ),
         ),
 
-        // Middle: Number display area with Backspace & Action
+        // Middle: Number display area with interactive moveable cursor & Backspace
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border(top: BorderSide(color: Colors.grey.shade100)),
+          ),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const SizedBox(width: 48), // Balance spacing
+              const SizedBox(width: 36),
+              // Interactive moveable cursor TextField
               Expanded(
-                child: Text(
-                  _dialNumber.isEmpty ? '' : _dialNumber,
+                child: TextField(
+                  controller: _dialController,
+                  readOnly: true, // Don't show system soft keyboard
+                  showCursor: true, // Show the moveable blinking cursor
+                  autofocus: false,
                   textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     fontSize: 28,
                     fontWeight: FontWeight.bold,
-                    letterSpacing: 1.5,
+                    letterSpacing: 2.0,
                     color: Color(0xFF0F172A),
+                  ),
+                  cursorColor: const Color(0xFF1565C0),
+                  cursorWidth: 3.0,
+                  cursorRadius: const Radius.circular(2),
+                  decoration: const InputDecoration(
+                    border: InputBorder.none,
+                    isDense: true,
+                    contentPadding: EdgeInsets.zero,
                   ),
                 ),
               ),
-              if (_dialNumber.isNotEmpty)
+              if (_dialController.text.isNotEmpty)
                 IconButton(
                   icon: const Icon(Icons.backspace_outlined, size: 22, color: Colors.grey),
                   onPressed: _onDialpadBackspace,
                   onLongPress: _onDialpadClear,
+                  tooltip: 'Xóa (Giữ để xóa hết)',
                 )
               else
                 const SizedBox(width: 48),
@@ -687,7 +811,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         // Keypad area (12 Keys + Call Button)
         Container(
           color: Colors.white,
-          padding: const EdgeInsets.fromLTRB(28, 8, 28, 16),
+          padding: const EdgeInsets.fromLTRB(28, 8, 28, 14),
           child: Column(
             children: [
               _buildKeypadRow('1', '', '2', 'ABC', '3', 'DEF'),
@@ -697,23 +821,22 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
               _buildKeypadRow('7', 'PQRS', '8', 'TUV', '9', 'WXYZ'),
               const SizedBox(height: 8),
               _buildKeypadRow('*', '', '0', '+', '#', ''),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
 
               // Bottom Call Action Row
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Call button
                   GestureDetector(
                     onTap: () {
-                      if (_dialNumber.isNotEmpty) {
+                      if (_dialController.text.isNotEmpty) {
                         HapticFeedback.mediumImpact();
-                        _callPhone(_dialNumber);
+                        _callPhone(_dialController.text);
                       }
                     },
                     child: Container(
-                      width: 66,
-                      height: 66,
+                      width: 64,
+                      height: 64,
                       decoration: BoxDecoration(
                         color: const Color(0xFF16A34A),
                         shape: BoxShape.circle,
@@ -725,7 +848,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                           ),
                         ],
                       ),
-                      child: const Icon(Icons.call_rounded, color: Colors.white, size: 32),
+                      child: const Icon(Icons.call_rounded, color: Colors.white, size: 30),
                     ),
                   ),
                 ],
@@ -759,10 +882,10 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
       onLongPress: digit == '0' ? () => _onDialpadKeyPress('+') : null,
       child: Container(
         width: 68,
-        height: 60,
+        height: 58,
         decoration: BoxDecoration(
           color: const Color(0xFFF8FAFC),
-          borderRadius: BorderRadius.circular(30),
+          borderRadius: BorderRadius.circular(29),
           border: Border.all(color: Colors.grey.shade200, width: 0.8),
         ),
         child: Column(

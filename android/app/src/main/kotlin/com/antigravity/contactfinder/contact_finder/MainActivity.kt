@@ -34,6 +34,11 @@ class MainActivity : FlutterActivity() {
                     val logs = getCallLogs()
                     result.success(logs)
                 }
+                "callPhone" -> {
+                    val number = call.argument<String>("number") ?: ""
+                    makeDirectCall(number)
+                    result.success(true)
+                }
                 "openNewContact" -> {
                     val number = call.argument<String>("number") ?: ""
                     openNewContact(number)
@@ -155,6 +160,36 @@ class MainActivity : FlutterActivity() {
         }
 
         return callLogs
+    }
+
+    private fun makeDirectCall(phoneNumber: String) {
+        try {
+            val cleanNumber = phoneNumber.replace(Regex("[^0-9+*#]"), "")
+            if (cleanNumber.isEmpty()) return
+
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
+                val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$cleanNumber")).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+            } else {
+                val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$cleanNumber")).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            try {
+                val cleanNumber = phoneNumber.replace(Regex("[^0-9+*#]"), "")
+                val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$cleanNumber")).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+            } catch (ex: Exception) {
+                ex.printStackTrace()
+            }
+        }
     }
 
     private fun openNewContact(phoneNumber: String) {

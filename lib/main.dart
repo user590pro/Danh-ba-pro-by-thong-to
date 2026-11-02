@@ -422,14 +422,20 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
 
   Future<void> _callPhone(String phoneNumber) async {
     final cleanPhone = phoneNumber.replaceAll(RegExp(r'\s+'), '');
-    final uri = Uri.parse('tel:$cleanPhone');
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri);
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Không thể gọi đến số $phoneNumber')),
-        );
+    if (cleanPhone.isEmpty) return;
+
+    try {
+      await _dialerChannel.invokeMethod('callPhone', {'number': cleanPhone});
+    } catch (_) {
+      final uri = Uri.parse('tel:$cleanPhone');
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Không thể gọi đến số $phoneNumber')),
+          );
+        }
       }
     }
   }

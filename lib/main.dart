@@ -72,6 +72,23 @@ class CallLogItem {
   }
 }
 
+class GroupedCallLog {
+  final String normalizedNumber;
+  final String rawNumber;
+  final String? name;
+  final List<CallLogItem> calls;
+
+  GroupedCallLog({
+    required this.normalizedNumber,
+    required this.rawNumber,
+    this.name,
+    required this.calls,
+  });
+
+  CallLogItem get latestCall => calls.first;
+  int get count => calls.length;
+}
+
 class MainHomeScreen extends StatefulWidget {
   const MainHomeScreen({super.key});
 
@@ -508,99 +525,357 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
     return '$minutes p $remainingSeconds s';
   }
 
-  void _showCallDetailsDialog(CallLogItem log) {
-    final title = (log.name != null && log.name!.isNotEmpty) ? log.name! : log.number;
-    final subtitle = (log.name != null && log.name!.isNotEmpty) ? log.number : '';
+  String _formatFullCallDate(int timestampMillis) {
+    if (timestampMillis == 0) return '';
+    final date = DateTime.fromMillisecondsSinceEpoch(timestampMillis);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final itemDate = DateTime(date.year, date.month, date.day);
+
+    final hour = date.hour.toString().padLeft(2, '0');
+    final minute = date.minute.toString().padLeft(2, '0');
+
+    if (itemDate == today) {
+      return 'Hôm nay, $hour:$minute';
+    } else if (today.difference(itemDate).inDays == 1) {
+      return 'Hôm qua, $hour:$minute';
+    } else {
+      final day = date.day.toString().padLeft(2, '0');
+      final month = date.month.toString().padLeft(2, '0');
+      final year = date.year;
+      return '$day/$month/$year lúc $hour:$minute';
+    }
+  }
+
+  String? _resolveContactName(String rawNumber) {
+    final clean = VietnameseMatcher.extractDigits(rawNumber);
+    if (clean.isEmpty) return null;
+    for (int i = 0; i < _allContacts.length; i++) {
+      final c = _allContacts[i];
+      for (int j = 0; j < c.phones.length; j++) {
+        final pDigits = c.phones[j].digits;
+        if (pDigits.isEmpty) continue;
+        if (pDigits == clean ||
+            (pDigits.length >= 9 &&
+                clean.length >= 9 &&
+                (pDigits.endsWith(clean.substring(clean.length - 9)) ||
+                    clean.endsWith(pDigits.substring(pDigits.length - 9))))) {
+          return c.displayName;
+        }
+      }
+    }
+    return null;
+  }
+
+  List<GroupedCallLog> _getGroupedCallLogs(int filter) {
+    final sourceLogs = filter == 0
+        ? _callLogs
+        : _callLogs.where((l) => l.type == 3).toList();
+
+    final Map<String, GroupedCallLog> groupMap = {};
+    final List<String> orderedKeys = [];
+
+    for (int i = 0; i < sourceLogs.length; i++) {
+      final log = sourceLogs[i];
+      var norm = log.number.replaceAll(RegExp(r'[^0-9+]'), '');
+      if (norm.startsWith('+84')) {
+        norm = '0${norm.substring(3)}';
+      } else if (norm.startsWith('84') && norm.length > 9) {
+        norm = '0${norm.substring(2)}';
+      }
+      if (norm.isEmpty) norm = log.number;
+
+      if (!groupMap.containsKey(norm)) {
+        final contactName = _resolveContactName(log.number) ?? log.name;
+        groupMap[norm] = GroupedCallLog(
+          normalizedNumber: norm,
+          rawNumber: log.number,
+          name: contactName,
+          calls: [log],
+        );
+        orderedKeys.add(norm);
+      } else {
+        groupMap[norm]!.calls.add(log);
+      }
+    }
+
+    return orderedKeys.map((k) => groupMap[k]!).toList();
+  }
+
+  Color _getCallTypeBgColor(int type, int duration) {
+    if (type == 3 || (type == 2 && duration == 0)) {
+      return const Color(0xFFFEF2F2);
+    }
+    if (type == 2) {
+      return const Color(0xFFF0FDF4);
+    }
+    if (type == 1) {
+      return const Color(0xFFEFF6FF);
+    }
+    return const Color(0xFFF8FAFC);
+  }
+
+  void _showCallHistoryDialog(GroupedCallLog group) {
+    final displayName = (group.name != null && group.name!.isNotEmpty)
+        ? group.name!
+        : group.rawNumber;
+    final hasName = (group.name != null && group.name!.isNotEmpty);
 
     showModalBottomSheet(
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
       builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        return Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.85,
+          ),
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: SafeArea(
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Drag handle
                 Center(
                   child: Container(
-                    width: 40,
-                    height: 4,
-                    margin: const EdgeInsets.only(bottom: 16),
+                    width: 44,
+                    height: 5,
+                    margin: const EdgeInsets.only(top: 12, bottom: 8),
                     decoration: BoxDecoration(
                       color: Colors.grey[300],
-                      borderRadius: BorderRadius.circular(2),
+                      borderRadius: BorderRadius.circular(3),
                     ),
                   ),
                 ),
-                Text(
-                  title,
-                  style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                ),
-                if (subtitle.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(subtitle, style: TextStyle(fontSize: 14, color: Colors.grey[600])),
-                ],
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    _buildCallTypeIcon(log.type, size: 16),
-                    const SizedBox(width: 6),
-                    Text(_getCallTypeName(log.type), style: TextStyle(fontSize: 13, color: Colors.grey[700])),
-                    const Spacer(),
-                    Text(_formatCallDate(log.date), style: TextStyle(fontSize: 13, color: Colors.grey[500])),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                const Divider(height: 1),
-                const SizedBox(height: 12),
 
-                // Action buttons
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _buildActionButton(
-                      icon: Icons.call_rounded,
-                      label: 'Gọi điện',
-                      color: const Color(0xFF16A34A),
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        _callPhone(log.number);
-                      },
-                    ),
-                    _buildActionButton(
-                      icon: Icons.message_rounded,
-                      label: 'Nhắn tin',
-                      color: const Color(0xFF0284C7),
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        _sendSms(log.number);
-                      },
-                    ),
-                    _buildActionButton(
-                      icon: Icons.copy_rounded,
-                      label: 'Sao chép',
-                      color: Colors.grey.shade700,
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        _copyToClipboard(log.number);
-                      },
-                    ),
-                    _buildActionButton(
-                      icon: Icons.person_add_rounded,
-                      label: 'Lưu số',
-                      color: const Color(0xFF1565C0),
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        _addNewContact(log.number);
-                      },
-                    ),
-                  ],
+                // Contact Header Card
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+                  child: Column(
+                    children: [
+                      // Avatar Circle
+                      Container(
+                        width: 68,
+                        height: 68,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            colors: hasName
+                                ? [const Color(0xFF1E88E5), const Color(0xFF1565C0)]
+                                : [const Color(0xFF64748B), const Color(0xFF475569)],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                        ),
+                        child: Center(
+                          child: Text(
+                            hasName ? displayName.trim().characters.first.toUpperCase() : '#',
+                            style: const TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        displayName,
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF0F172A),
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      if (hasName) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          group.rawNumber,
+                          style: TextStyle(fontSize: 15, color: Colors.grey[600]),
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+
+                      // Actions Row: Gọi, Nhắn tin, Sao chép, Lưu số
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          _buildActionButton(
+                            icon: Icons.call_rounded,
+                            label: 'Gọi điện',
+                            color: const Color(0xFF16A34A),
+                            onTap: () {
+                              Navigator.pop(ctx);
+                              _callPhone(group.rawNumber);
+                            },
+                          ),
+                          _buildActionButton(
+                            icon: Icons.message_rounded,
+                            label: 'Nhắn tin',
+                            color: const Color(0xFF0284C7),
+                            onTap: () {
+                              Navigator.pop(ctx);
+                              _sendSms(group.rawNumber);
+                            },
+                          ),
+                          _buildActionButton(
+                            icon: Icons.copy_rounded,
+                            label: 'Sao chép',
+                            color: Colors.grey.shade700,
+                            onTap: () {
+                              Navigator.pop(ctx);
+                              _copyToClipboard(group.rawNumber);
+                            },
+                          ),
+                          _buildActionButton(
+                            icon: Icons.person_add_rounded,
+                            label: 'Lưu số',
+                            color: const Color(0xFF1565C0),
+                            onTap: () {
+                              Navigator.pop(ctx);
+                              _addNewContact(group.rawNumber);
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 8),
+
+                const Divider(height: 1, thickness: 1),
+
+                // History Section Title
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  color: const Color(0xFFF8FAFC),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.history_rounded, size: 18, color: Color(0xFF475569)),
+                      const SizedBox(width: 6),
+                      Text(
+                        'LỊCH SỬ CUỘC GỌI (${group.count} lần)',
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF475569),
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                const Divider(height: 1, thickness: 1),
+
+                // List of Calls
+                Flexible(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    itemCount: group.calls.length,
+                    separatorBuilder: (context, index) => Divider(
+                      height: 1,
+                      indent: 64,
+                      color: Colors.grey.shade100,
+                    ),
+                    itemBuilder: (context, index) {
+                      final call = group.calls[index];
+                      final isMissed = (call.type == 3);
+                      final isOutgoing = (call.type == 2);
+                      final isIncoming = (call.type == 1);
+                      final isRejected = (call.type == 5);
+
+                      String callStatusTitle;
+                      Color statusColor = const Color(0xFF0F172A);
+                      if (isOutgoing) {
+                        if (call.duration > 0) {
+                          callStatusTitle = 'Cuộc gọi đi';
+                        } else {
+                          callStatusTitle = 'Đổ chuông không nghe máy';
+                          statusColor = const Color(0xFFD97706);
+                        }
+                      } else if (isIncoming) {
+                        if (call.duration > 0) {
+                          callStatusTitle = 'Cuộc gọi đến';
+                        } else {
+                          callStatusTitle = 'Cuộc gọi nhỡ';
+                          statusColor = const Color(0xFFDC2626);
+                        }
+                      } else if (isMissed) {
+                        callStatusTitle = 'Cuộc gọi nhỡ';
+                        statusColor = const Color(0xFFDC2626);
+                      } else if (isRejected) {
+                        callStatusTitle = 'Từ chối cuộc gọi';
+                        statusColor = const Color(0xFFEA580C);
+                      } else {
+                        callStatusTitle = 'Cuộc gọi';
+                      }
+
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Call icon with background circle
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: _getCallTypeBgColor(call.type, call.duration),
+                                shape: BoxShape.circle,
+                              ),
+                              child: _buildCallTypeIcon(call.type, size: 18),
+                            ),
+                            const SizedBox(width: 14),
+
+                            // Call detail text
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    callStatusTitle,
+                                    style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.bold,
+                                      color: statusColor,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  if (call.duration > 0) ...[
+                                    Text(
+                                      'Thời lượng: ${_formatDuration(call.duration)}',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w500,
+                                        color: Colors.grey[700],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                  ],
+                                  Text(
+                                    _formatFullCallDate(call.date),
+                                    style: TextStyle(fontSize: 12.5, color: Colors.grey[500]),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            // Time on right
+                            Text(
+                              _formatCallDate(call.date),
+                              style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500, color: Colors.grey[600]),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
               ],
             ),
           ),
@@ -951,9 +1226,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
 
   // ==================== TAB 0: GẦN ĐÂY (CALL LOGS) ====================
   Widget _buildCallLogsTab() {
-    final filteredLogs = _callLogFilter == 0
-        ? _callLogs
-        : _callLogs.where((l) => l.type == 3).toList();
+    final groupedLogs = _getGroupedCallLogs(_callLogFilter);
 
     return Column(
       children: [
@@ -995,7 +1268,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
               ),
               const Spacer(),
               Text(
-                '${filteredLogs.length} cuộc gọi',
+                '${groupedLogs.length} người liên hệ',
                 style: TextStyle(fontSize: 12, color: Colors.grey[500]),
               ),
             ],
@@ -1014,7 +1287,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
                     ],
                   ),
                 )
-              : (filteredLogs.isEmpty
+              : (groupedLogs.isEmpty
                   ? Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -1034,14 +1307,15 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
                       onRefresh: _loadCallLogs,
                       child: ListView.builder(
                         physics: const AlwaysScrollableScrollPhysics(parent: ClampingScrollPhysics()),
-                        itemCount: filteredLogs.length,
+                        itemCount: groupedLogs.length,
                         itemBuilder: (context, index) {
-                          final log = filteredLogs[index];
-                          final isMissed = (log.type == 3);
-                          final displayName = (log.name != null && log.name!.isNotEmpty)
-                              ? log.name!
-                              : log.number;
-                          final hasName = (log.name != null && log.name!.isNotEmpty);
+                          final group = groupedLogs[index];
+                          final latest = group.latestCall;
+                          final isMissed = (latest.type == 3);
+                          final displayName = (group.name != null && group.name!.isNotEmpty)
+                              ? group.name!
+                              : group.rawNumber;
+                          final hasName = (group.name != null && group.name!.isNotEmpty);
 
                           return Container(
                             decoration: BoxDecoration(
@@ -1051,45 +1325,79 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
                             child: Material(
                               color: Colors.transparent,
                               child: InkWell(
-                                onTap: () => _showCallDetailsDialog(log),
+                                onTap: () => _showCallHistoryDialog(group),
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                                   child: Row(
                                     children: [
                                       // Call Type Icon
-                                      _buildCallTypeIcon(log.type, size: 20),
+                                      _buildCallTypeIcon(latest.type, size: 20),
                                       const SizedBox(width: 14),
-                                      // Name / Number
+                                      // Name / Number & Count
                                       Expanded(
                                         child: Column(
                                           crossAxisAlignment: CrossAxisAlignment.start,
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            Text(
-                                              displayName,
-                                              style: TextStyle(
-                                                fontSize: 15.5,
-                                                fontWeight: FontWeight.bold,
-                                                color: isMissed
-                                                    ? const Color(0xFFDC2626)
-                                                    : const Color(0xFF0F172A),
-                                              ),
-                                              overflow: TextOverflow.ellipsis,
+                                            Row(
+                                              children: [
+                                                Flexible(
+                                                  child: Text(
+                                                    displayName,
+                                                    style: TextStyle(
+                                                      fontSize: 15.5,
+                                                      fontWeight: FontWeight.bold,
+                                                      color: isMissed
+                                                          ? const Color(0xFFDC2626)
+                                                          : const Color(0xFF0F172A),
+                                                    ),
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                                if (group.count > 1) ...[
+                                                  const SizedBox(width: 6),
+                                                  Text(
+                                                    '(${group.count})',
+                                                    style: TextStyle(
+                                                      fontSize: 14.5,
+                                                      fontWeight: FontWeight.bold,
+                                                      color: isMissed
+                                                          ? const Color(0xFFDC2626)
+                                                          : const Color(0xFF1565C0),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ],
                                             ),
                                             const SizedBox(height: 2),
                                             Row(
                                               children: [
                                                 if (hasName) ...[
                                                   Text(
-                                                    log.number,
+                                                    group.rawNumber,
                                                     style: TextStyle(fontSize: 13, color: Colors.grey[600]),
                                                   ),
                                                   const SizedBox(width: 8),
                                                 ],
-                                                if (log.duration > 0) ...[
+                                                if (latest.duration > 0) ...[
                                                   Text(
-                                                    _formatDuration(log.duration),
-                                                    style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+                                                    _formatDuration(latest.duration),
+                                                    style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                                                  ),
+                                                ] else if (latest.type == 2) ...[
+                                                  const Text(
+                                                    'Đổ chuông không nghe máy',
+                                                    style: TextStyle(fontSize: 12, color: Color(0xFFD97706)),
+                                                  ),
+                                                ] else if (latest.type == 3) ...[
+                                                  const Text(
+                                                    'Cuộc gọi nhỡ',
+                                                    style: TextStyle(fontSize: 12, color: Color(0xFFDC2626)),
+                                                  ),
+                                                ] else if (latest.type == 5) ...[
+                                                  const Text(
+                                                    'Từ chối cuộc gọi',
+                                                    style: TextStyle(fontSize: 12, color: Colors.grey),
                                                   ),
                                                 ],
                                               ],
@@ -1099,13 +1407,13 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
                                       ),
                                       // Date & Call Button
                                       Text(
-                                        _formatCallDate(log.date),
+                                        _formatCallDate(latest.date),
                                         style: TextStyle(fontSize: 12, color: Colors.grey[500]),
                                       ),
                                       const SizedBox(width: 8),
                                       GestureDetector(
                                         behavior: HitTestBehavior.opaque,
-                                        onTap: () => _callPhone(log.number),
+                                        onTap: () => _callPhone(group.rawNumber),
                                         child: Container(
                                           padding: const EdgeInsets.all(8),
                                           decoration: BoxDecoration(

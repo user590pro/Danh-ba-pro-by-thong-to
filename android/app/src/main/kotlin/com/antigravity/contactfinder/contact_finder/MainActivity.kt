@@ -136,7 +136,7 @@ class MainActivity : FlutterActivity() {
                 val durationIdx = it.getColumnIndex(CallLog.Calls.DURATION)
 
                 var count = 0
-                while (it.moveToNext() && count < 200) {
+                while (it.moveToNext() && count < 500) {
                     val id = if (idIdx >= 0) it.getString(idIdx) else ""
                     val number = if (numberIdx >= 0) it.getString(numberIdx) ?: "" else ""
                     val name = if (nameIdx >= 0) it.getString(nameIdx) else null

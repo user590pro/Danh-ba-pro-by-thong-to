@@ -567,6 +567,564 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
     return null;
   }
 
+  PreparedContact? _findContactByPhone(String rawNumber) {
+    final clean = VietnameseMatcher.extractDigits(rawNumber);
+    if (clean.isEmpty) return null;
+    for (int i = 0; i < _allContacts.length; i++) {
+      final c = _allContacts[i];
+      for (int j = 0; j < c.phones.length; j++) {
+        final pDigits = c.phones[j].digits;
+        if (pDigits.isEmpty) continue;
+        if (pDigits == clean ||
+            (pDigits.length >= 9 &&
+                clean.length >= 9 &&
+                (pDigits.endsWith(clean.substring(clean.length - 9)) ||
+                    clean.endsWith(pDigits.substring(pDigits.length - 9))))) {
+          return c;
+        }
+      }
+    }
+    return null;
+  }
+
+  void _initiateContactCall(PreparedContact contact) {
+    if (contact.phones.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Liên hệ này chưa có số điện thoại')),
+      );
+      return;
+    }
+    if (contact.phones.length == 1) {
+      _callPhone(contact.phones.first.raw);
+    } else {
+      _showSelectPhoneDialog(contact);
+    }
+  }
+
+  void _showSelectPhoneDialog(PreparedContact contact) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+          child: SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFEFF6FF),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.call_rounded, color: Color(0xFF1565C0), size: 24),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Chọn số muốn gọi',
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                          ),
+                          Text(
+                            contact.displayName,
+                            style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                const Divider(height: 1),
+                const SizedBox(height: 12),
+
+                ...List.generate(contact.phones.length, (idx) {
+                  final phone = contact.phones[idx].raw;
+                  final isPrimary = (idx == 0);
+                  final label = isPrimary ? 'Số chính' : 'Số phụ $idx';
+
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isPrimary ? const Color(0xFFBFDBFE) : Colors.grey.shade200,
+                        width: isPrimary ? 1.5 : 1,
+                      ),
+                    ),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          _callPhone(phone);
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: isPrimary ? const Color(0xFFDBEAFE) : const Color(0xFFFFEDD5),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  label,
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.bold,
+                                    color: isPrimary ? const Color(0xFF1E40AF) : const Color(0xFFC2410C),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  phone,
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF0F172A),
+                                  ),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: const BoxDecoration(
+                                  color: Color(0xFFF0FDF4),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(Icons.call_rounded, color: Color(0xFF16A34A), size: 20),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showQuickEditContactDialog(PreparedContact? contact, {String? defaultPhone}) {
+    final isEditing = (contact != null);
+    final nameController = TextEditingController(
+      text: isEditing && contact.displayName != 'Không có tên' ? contact.displayName : '',
+    );
+    final primaryPhoneController = TextEditingController(
+      text: isEditing
+          ? (contact.phones.isNotEmpty ? contact.phones[0].raw : '')
+          : (defaultPhone ?? ''),
+    );
+
+    final List<TextEditingController> extraPhoneControllers = [];
+    if (isEditing && contact.phones.length > 1) {
+      for (int i = 1; i < contact.phones.length; i++) {
+        extraPhoneControllers.add(TextEditingController(text: contact.phones[i].raw));
+      }
+    }
+
+    bool isSaving = false;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: Container(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(context).size.height * 0.85,
+                ),
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                ),
+                child: SafeArea(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Header
+                      Center(
+                        child: Container(
+                          width: 44,
+                          height: 5,
+                          margin: const EdgeInsets.only(top: 12, bottom: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.grey[300],
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: const BoxDecoration(
+                                color: Color(0xFFEFF6FF),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                isEditing ? Icons.edit_note_rounded : Icons.person_add_rounded,
+                                color: const Color(0xFF1565C0),
+                                size: 24,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                isEditing ? 'Chỉnh sửa liên hệ' : 'Thêm liên hệ mới',
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF0F172A),
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.close, color: Colors.grey),
+                              onPressed: () => Navigator.pop(ctx),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Divider(height: 1),
+
+                      // Form content
+                      Flexible(
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // Name Field
+                              const Text(
+                                'Họ và tên *',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF334155),
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              TextField(
+                                controller: nameController,
+                                textCapitalization: TextCapitalization.words,
+                                decoration: InputDecoration(
+                                  hintText: 'Nhập tên người liên hệ...',
+                                  prefixIcon: const Icon(Icons.person_outline_rounded, color: Color(0xFF1565C0)),
+                                  filled: true,
+                                  fillColor: const Color(0xFFF8FAFC),
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                    borderSide: BorderSide(color: Colors.grey.shade300),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                    borderSide: BorderSide(color: Colors.grey.shade300),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                    borderSide: const BorderSide(color: Color(0xFF1565C0), width: 1.5),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+
+                              // Primary Phone Field
+                              Row(
+                                children: [
+                                  const Text(
+                                    'Số điện thoại chính *',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF334155),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFDBEAFE),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: const Text(
+                                      'Chính',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF1E40AF),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              TextField(
+                                controller: primaryPhoneController,
+                                keyboardType: TextInputType.phone,
+                                decoration: InputDecoration(
+                                  hintText: 'Ví dụ: 0912345678',
+                                  prefixIcon: const Icon(Icons.phone_rounded, color: Color(0xFF16A34A)),
+                                  filled: true,
+                                  fillColor: const Color(0xFFF8FAFC),
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                    borderSide: BorderSide(color: Colors.grey.shade300),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                    borderSide: BorderSide(color: Colors.grey.shade300),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                    borderSide: const BorderSide(color: Color(0xFF16A34A), width: 1.5),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+
+                              // Secondary Phones List
+                              if (extraPhoneControllers.isNotEmpty) ...[
+                                const Text(
+                                  'Số điện thoại phụ',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF334155),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                ...List.generate(extraPhoneControllers.length, (idx) {
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 10),
+                                    child: Row(
+                                      children: [
+                                        Expanded(
+                                          child: TextField(
+                                            controller: extraPhoneControllers[idx],
+                                            keyboardType: TextInputType.phone,
+                                            decoration: InputDecoration(
+                                              hintText: 'Số phụ ${idx + 1}...',
+                                              prefixIcon: const Icon(Icons.phone_outlined, color: Color(0xFFEA580C)),
+                                              filled: true,
+                                              fillColor: const Color(0xFFF8FAFC),
+                                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                              border: OutlineInputBorder(
+                                                borderRadius: BorderRadius.circular(10),
+                                                borderSide: BorderSide(color: Colors.grey.shade300),
+                                              ),
+                                              enabledBorder: OutlineInputBorder(
+                                                borderRadius: BorderRadius.circular(10),
+                                                borderSide: BorderSide(color: Colors.grey.shade300),
+                                              ),
+                                              focusedBorder: OutlineInputBorder(
+                                                borderRadius: BorderRadius.circular(10),
+                                                borderSide: const BorderSide(color: Color(0xFFEA580C), width: 1.5),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(Icons.remove_circle_outline, color: Color(0xFFDC2626)),
+                                          tooltip: 'Xóa số phụ này',
+                                          onPressed: () {
+                                            setModalState(() {
+                                              extraPhoneControllers.removeAt(idx);
+                                            });
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                              ],
+
+                              // Add Extra Phone Button
+                              OutlinedButton.icon(
+                                icon: const Icon(Icons.add_rounded, size: 20),
+                                label: const Text('Thêm số phụ', style: TextStyle(fontWeight: FontWeight.bold)),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: const Color(0xFF1565C0),
+                                  side: const BorderSide(color: Color(0xFF93C5FD), width: 1.2),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                ),
+                                onPressed: () {
+                                  setModalState(() {
+                                    extraPhoneControllers.add(TextEditingController());
+                                  });
+                                },
+                              ),
+                              const SizedBox(height: 24),
+
+                              // Submit Button
+                              SizedBox(
+                                width: double.infinity,
+                                height: 48,
+                                child: ElevatedButton.icon(
+                                  icon: isSaving
+                                      ? const SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                                        )
+                                      : const Icon(Icons.check_circle_rounded, color: Colors.white),
+                                  label: Text(
+                                    isSaving ? 'Đang lưu...' : 'Lưu thay đổi',
+                                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                  ),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF1565C0),
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
+                                  onPressed: isSaving
+                                      ? null
+                                      : () async {
+                                          final name = nameController.text.trim();
+                                          final primaryPhone = primaryPhoneController.text.trim();
+
+                                          if (name.isEmpty && primaryPhone.isEmpty) {
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              const SnackBar(content: Text('Vui lòng nhập tên hoặc số điện thoại')),
+                                            );
+                                            return;
+                                          }
+
+                                          setModalState(() => isSaving = true);
+
+                                          try {
+                                            final phoneNumbers = <Phone>[];
+                                            if (primaryPhone.isNotEmpty) {
+                                              phoneNumbers.add(Phone(
+                                                number: primaryPhone,
+                                                isPrimary: true,
+                                                label: const Label(PhoneLabel.mobile),
+                                              ));
+                                            }
+                                            for (final epc in extraPhoneControllers) {
+                                              final ep = epc.text.trim();
+                                              if (ep.isNotEmpty) {
+                                                phoneNumbers.add(Phone(
+                                                  number: ep,
+                                                  isPrimary: false,
+                                                  label: const Label(PhoneLabel.work),
+                                                ));
+                                              }
+                                            }
+
+                                            if (isEditing && contact.id.isNotEmpty) {
+                                              final existing = await FlutterContacts.get(
+                                                contact.id,
+                                                properties: {ContactProperty.name, ContactProperty.phone},
+                                              );
+                                              if (existing != null) {
+                                                final updated = existing.copyWith(
+                                                  name: Name(first: name.isNotEmpty ? name : 'Không có tên'),
+                                                  phones: phoneNumbers,
+                                                );
+                                                await FlutterContacts.update(updated);
+                                              } else {
+                                                final newContact = Contact(
+                                                  name: Name(first: name.isNotEmpty ? name : 'Không có tên'),
+                                                  phones: phoneNumbers,
+                                                );
+                                                await FlutterContacts.create(newContact);
+                                              }
+                                            } else {
+                                              final newContact = Contact(
+                                                name: Name(first: name.isNotEmpty ? name : 'Không có tên'),
+                                                phones: phoneNumbers,
+                                              );
+                                              await FlutterContacts.create(newContact);
+                                            }
+
+                                            Navigator.pop(ctx);
+                                            _loadContacts();
+
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                SnackBar(
+                                                  content: Row(
+                                                    children: [
+                                                      const Icon(Icons.check_circle, color: Colors.white, size: 20),
+                                                      const SizedBox(width: 8),
+                                                      Text('Đã lưu thành công danh bạ: ${name.isNotEmpty ? name : primaryPhone}'),
+                                                    ],
+                                                  ),
+                                                  backgroundColor: const Color(0xFF16A34A),
+                                                  behavior: SnackBarBehavior.floating,
+                                                ),
+                                              );
+                                            }
+                                          } catch (e) {
+                                            setModalState(() => isSaving = false);
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                SnackBar(content: Text('Lỗi khi lưu danh bạ: $e')),
+                                              );
+                                            }
+                                          }
+                                        },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   List<GroupedCallLog> _getGroupedCallLogs(int filter) {
     final sourceLogs = filter == 0
         ? _callLogs
@@ -710,7 +1268,12 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
                             color: const Color(0xFF16A34A),
                             onTap: () {
                               Navigator.pop(ctx);
-                              _callPhone(group.rawNumber);
+                              final c = _findContactByPhone(group.rawNumber);
+                              if (c != null && c.phones.length > 1) {
+                                _showSelectPhoneDialog(c);
+                              } else {
+                                _callPhone(group.rawNumber);
+                              }
                             },
                           ),
                           _buildActionButton(
@@ -732,12 +1295,13 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
                             },
                           ),
                           _buildActionButton(
-                            icon: Icons.person_add_rounded,
-                            label: 'Lưu số',
+                            icon: hasName ? Icons.edit_note_rounded : Icons.person_add_rounded,
+                            label: hasName ? 'Sửa liên hệ' : 'Lưu số',
                             color: const Color(0xFF1565C0),
                             onTap: () {
                               Navigator.pop(ctx);
-                              _addNewContact(group.rawNumber);
+                              final c = _findContactByPhone(group.rawNumber);
+                              _showQuickEditContactDialog(c, defaultPhone: group.rawNumber);
                             },
                           ),
                         ],
@@ -967,18 +1531,47 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
                     ),
                   ),
                 ),
-                Text(
-                  contact.displayName,
-                  style: const TextStyle(
-                    fontSize: 19,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF0F172A),
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '${contact.phones.length} số điện thoại lưu trữ',
-                  style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            contact.displayName,
+                            style: const TextStyle(
+                              fontSize: 19,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF0F172A),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${contact.phones.length} số điện thoại lưu trữ',
+                            style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                          ),
+                        ],
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _showQuickEditContactDialog(contact);
+                      },
+                      icon: const Icon(Icons.edit_outlined, size: 16),
+                      label: const Text('Sửa liên hệ', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFEFF6FF),
+                        foregroundColor: const Color(0xFF1D4ED8),
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          side: const BorderSide(color: Color(0xFFBFDBFE)),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 14),
                 const Divider(height: 1),
@@ -993,19 +1586,40 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
                     ),
                   )
                 else
-                  ...contact.phones.map((p) {
+                  ...contact.phones.asMap().entries.map((entry) {
+                    final idx = entry.key;
+                    final p = entry.value;
                     final phone = p.raw;
                     final hl = phoneHighlights[phone] ?? [];
+                    final isPrimary = idx == 0;
                     return Container(
                       margin: const EdgeInsets.only(bottom: 10),
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                       decoration: BoxDecoration(
                         color: const Color(0xFFF8FAFC),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.grey.shade200),
+                        border: Border.all(
+                          color: isPrimary ? const Color(0xFFBFDBFE) : Colors.grey.shade200,
+                        ),
                       ),
                       child: Row(
                         children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            margin: const EdgeInsets.only(right: 10),
+                            decoration: BoxDecoration(
+                              color: isPrimary ? const Color(0xFFDBEAFE) : const Color(0xFFFEF3C7),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              isPrimary ? 'Chính' : 'Phụ $idx',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: isPrimary ? const Color(0xFF1D4ED8) : const Color(0xFFB45309),
+                              ),
+                            ),
+                          ),
                           Expanded(
                             child: _buildFastHighlightedText(
                               text: phone,
@@ -1507,9 +2121,20 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
                           baseStyle: _phoneBaseStyle,
                           highlightStyle: _phoneHighlightStyle,
                         ),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.call_rounded, color: Color(0xFF16A34A)),
-                          onPressed: () => _callPhone(displayPhone),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit_outlined, color: Color(0xFF64748B), size: 20),
+                              tooltip: 'Sửa liên hệ',
+                              onPressed: () => _showQuickEditContactDialog(contact),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.call_rounded, color: Color(0xFF16A34A)),
+                              tooltip: 'Gọi điện',
+                              onPressed: () => _initiateContactCall(contact),
+                            ),
+                          ],
                         ),
                         onTap: () {
                           final clean = displayPhone.replaceAll(RegExp(r'\s+'), '');
@@ -1949,24 +2574,46 @@ class _MainHomeScreenState extends State<MainHomeScreen> with WidgetsBindingObse
                         ],
                       ),
                     ),
-                    if (displayPhone.isNotEmpty)
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => _callPhone(displayPhone),
-                        child: Container(
-                          padding: const EdgeInsets.all(8),
-                          margin: const EdgeInsets.only(left: 8),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF0FDF4),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Icon(
-                            Icons.call_rounded,
-                            color: Color(0xFF16A34A),
-                            size: 20,
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => _showQuickEditContactDialog(contact),
+                          child: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF1F5F9),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Icon(
+                              Icons.edit_outlined,
+                              color: Color(0xFF475569),
+                              size: 19,
+                            ),
                           ),
                         ),
-                      ),
+                        if (displayPhone.isNotEmpty) ...[
+                          const SizedBox(width: 8),
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => _initiateContactCall(contact),
+                            child: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF0FDF4),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Icon(
+                                Icons.call_rounded,
+                                color: Color(0xFF16A34A),
+                                size: 20,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
                   ],
                 ),
               ),
